@@ -116,7 +116,11 @@ int gbodef_allocateData(DATA *data, threadData_t *threadData, SOLVER_INFO *solve
     messageClose(LOG_STDOUT);
     omc_throw_function(threadData);
   }
-
+  if(omc_flag[FLAG_ILS]) {
+    gbfData->numSteps = atoi(omc_flagValue[FLAG_ILS]);
+  } else {
+    gbfData->numSteps = 1;
+  }
   // Get size of non-linear system
   analyseButcherTableau(gbfData->tableau, gbData->nStates, &gbfData->nlSystemSize, &gbfData->type);
 
@@ -151,10 +155,10 @@ int gbodef_allocateData(DATA *data, threadData_t *threadData, SOLVER_INFO *solve
   infoStreamPrint(LOG_SOLVER, 0, "Step control factor is set to %g", gbfData->tableau->fac);
 
   gbfData->ctrl_method = getControllerMethod(FLAG_MR_CTRL);
-  if (gbfData->ctrl_method == GB_CTRL_CNST) {
-    warningStreamPrint(LOG_STDOUT, 0, "Constant step size not supported for inner integration. Using IController.");
-    gbfData->ctrl_method = GB_CTRL_I;
-  }
+  // if (gbfData->ctrl_method == GB_CTRL_CNST) {
+  //   warningStreamPrint(LOG_STDOUT, 0, "Constant step size not supported for inner integration. Using IController.");
+  //   gbfData->ctrl_method = GB_CTRL_I;
+  // }
   gbfData->stepSize_control = getControllFunc(gbfData->ctrl_method);
 
   // allocate memory for the generic RK method
@@ -682,8 +686,12 @@ void gbodef_init(DATA* data, threadData_t* threadData, SOLVER_INFO* solverInfo)
   gbfData->didEventStep = FALSE;
 
   gbfData->time = gbData->time;
-  gbfData->stepSize = 0.1*gbData->stepSize*IController(&(gbData->err_fast), &(gbData->stepSize), 1);
-
+  if (gbfData->ctrl_method == GB_CTRL_CNST) {
+    gbfData->stepSize = gbData->stepSize/gbfData->numSteps;
+    infoStreamPrint(LOG_SOLVER, 0, "StepSize: %g", gbfData->stepSize);
+  } else {
+    gbfData->stepSize = 0.1*gbData->stepSize*IController(&(gbData->err_fast), &(gbData->stepSize), 1);
+  }
   memcpy(gbfData->yOld, gbData->yOld, sizeof(double) * nStates);
   memcpy(gbfData->y, gbData->y, sizeof(double) * nStates);
 
@@ -778,9 +786,9 @@ int gbodef_main(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo, d
   *  and if outer integrations have been done with all states involved
   * (gbfData->timeRight < gbData->timeLeft)
   */
-  if (gbfData->didEventStep || gbfData->timeRight < gbData->timeLeft) {
+  //if (gbfData->didEventStep || gbfData->timeRight < gbData->timeLeft) {
     gbodef_init(data, threadData, solverInfo);
-  }
+  //}
 
 
   fastStatesChange = checkFastStatesChange(gbData);
@@ -839,8 +847,10 @@ int gbodef_main(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo, d
     messageClose(LOG_GBODE_V);
   }
 
-  while (gbfData->time < innerTargetTime) {
-
+  int count = 0;
+  // while (gbfData->time < innerTargetTime) {
+  while (count<gbfData->numSteps) {
+    count = count + 1;
     // Don't exceed simulation stop time
     if (gbfData->time + gbfData->stepSize > stopTime) {
       gbfData->stepSize = stopTime - gbfData->time;
@@ -850,7 +860,7 @@ int gbodef_main(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo, d
     // Strategy: either set outer step to the inner integration
     // or the other way around (depending on, if more or less
     // than 2 inner steps required)
-    if (gbfData->time + gbfData->stepSize > gbData->timeRight) {
+    if (gbfData->time + gbfData->stepSize > gbData->timeRight  && gbfData->ctrl_method!=GB_CTRL_CNST) {
       // if (gbfData->time - gbfData->stepSize > gbData->timeLeft) {
       //   gbData->timeRight = gbfData->timeRight;
       //   gbData->lastStepSize = gbData->timeRight - gbData->timeLeft;
@@ -895,16 +905,22 @@ int gbodef_main(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo, d
       // error handling: try half of the step size!
       if (integrator_step_info != 0) {
         (gbfData->stats).nConvergenveTestFailures++;
-        infoStreamPrint(LOG_SOLVER, 0, "gbodef_main: Failed to calculate step at time = %5g.", gbfData->time);
-        gbfData->stepSize *= 0.5;
-        infoStreamPrint(LOG_SOLVER, 0, "Try half of the step size = %g", gbfData->stepSize);
-        if (gbfData->stepSize < GB_MINIMAL_STEP_SIZE) {
-          errorStreamPrint(LOG_STDOUT, 0, "Simulation aborted! Minimum step size %g reached, but error still to large.", GB_MINIMAL_STEP_SIZE);
+        if (gbfData->ctrl_method == GB_CTRL_CNST) {
+          errorStreamPrint(LOG_STDOUT, 0, "Simulation aborted since gbode is running with fixed step size!");
           messageClose(LOG_SOLVER);
           return -1;
+        } else {
+          infoStreamPrint(LOG_SOLVER, 0, "gbodef_main: Failed to calculate step at time = %5g.", gbfData->time);
+          gbfData->stepSize *= 0.5;
+          infoStreamPrint(LOG_SOLVER, 0, "Try half of the step size = %g", gbfData->stepSize);
+          if (gbfData->stepSize < GB_MINIMAL_STEP_SIZE) {
+            errorStreamPrint(LOG_STDOUT, 0, "Simulation aborted! Minimum step size %g reached, but error still to large.", GB_MINIMAL_STEP_SIZE);
+            messageClose(LOG_SOLVER);
+            return -1;
+          }
+          err = 100;
+          continue;
         }
-        err = 100;
-        continue;
       }
 
       for (i = 0, err=0; i < nFastStates; i++) {
@@ -944,7 +960,7 @@ int gbodef_main(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo, d
       }
 
       // Re-do step, if error is larger than requested
-      if (err > 1)
+      if (err > 1 && gbData->ctrl_method != GB_CTRL_CNST)
       {
         gbfData->stats.nErrorTestFailures++;
         infoStreamPrint(LOG_SOLVER, 0, "Reject step from %10g to %10g, error %10g, new stepsize %10g",
@@ -953,7 +969,7 @@ int gbodef_main(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo, d
           dumpFastStates_gbf(gbData, gbfData->time + gbfData->lastStepSize, 1);
         }
       }
-    } while (err > 1);
+    } while (err > 1 && gbData->ctrl_method != GB_CTRL_CNST);
 
     // Count successful integration steps
     gbfData->stats.nStepsTaken += 1;
@@ -1073,6 +1089,10 @@ int gbodef_main(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo, d
       break;
     }
   }
+
+  gbfData->time = gbData->timeRight;
+  gbfData->timeLeft = gbData->timeRight;
+  gbfData->timeRight = gbData->timeRight;
 
   // copy error and values of the fast states to the outer integrator routine if outer integration time is reached
   //gbData->err_fast = gbfData->errValues[0];
@@ -1313,7 +1333,7 @@ int gbode_birate(DATA *data, threadData_t *threadData, SOLVER_INFO *solverInfo)
       gbData->err_fast = 0;
       gbData->err_int = 0;
       for (i = 0; i < gbData->nStates; i++) {
-        if (gbData->err[i] >= 1) {
+        if ((gbData->err[i] > 1 && gbData->ctrl_method != GB_CTRL_CNST) || (gbData->err[i] > err)) {
           gbData->fastStatesIdx[gbData->nFastStates] = i;
           gbData->nFastStates++;
           gbData->err_fast = fmax(gbData->err_fast, gbData->err[i]);

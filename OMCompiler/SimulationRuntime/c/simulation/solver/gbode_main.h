@@ -95,6 +95,7 @@ typedef struct DATA_GBODEF{
   double time, timeLeft, timeRight;                 /* actual time values and the time values of the current interpolation interval */
   double stepSize, lastStepSize;                    /* actual and last step size of integration */
   int act_stage;                                    /* Current stage of Runge-Kutta method. */
+  int numSteps;
   enum GB_CTRL_METHOD ctrl_method;                  /* Step size control algorithm */
   modelica_boolean isExplicit;                      /* Boolean stating if the RK method is explicit */
   BUTCHER_TABLEAU* tableau;                         /* Butcher tableau of the Runge-Kutta method */
